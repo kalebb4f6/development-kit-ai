@@ -1,0 +1,19 @@
+# Build output
+/bin/
+
+# Backup files from kb-ai
+*.bak
+*.new
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
