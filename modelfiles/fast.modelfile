@@ -1,0 +1,11 @@
+FROM qwen2.5:1.5b
+
+# Menos contexto = bem mais rápido
+PARAMETER num_ctx 2048
+
+# Ajuste bom pro seu Ryzen (6c/12t)
+PARAMETER num_thread 10
+
+# Para respostas mais diretas (menos texto inútil)
+PARAMETER temperature 0.2
+PARAMETER top_p 0.9
