@@ -28,8 +28,17 @@ CLAUDE_DIR="$PROJECT_ROOT/.claude"
 FEATURES_DIR="$PROJECT_ROOT/features"
 
 OLLAMA_API="http://localhost:11434/api"
-DEFAULT_MODEL="qwen2.5:7b"
+DEFAULT_MODEL="qwen2.5:1.5b"
 MODELS=("qwen2.5:7b" "llama3.1:8b" "deepseek-coder:6.7b")
+
+# Specialized models for feature analysis
+FEATURE_MODELS=(
+    "feature-analyst"
+    "feature-planner"
+    "feature-reviewer"
+    "runbook-generator"
+)
+MODELFILES_DIR="$SCRIPT_DIR/../modelfiles"
 
 # Colors
 RED='\033[0;31m'
@@ -44,6 +53,162 @@ log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
+
+#######################################
+# FEATURE MODEL HELPERS
+#######################################
+
+# Check if a model exists in Ollama
+model_exists() {
+    local model="$1"
+    ollama list 2>/dev/null | grep -q "^${model}"
+}
+
+# Ensure specialized feature models are created
+ensure_feature_models() {
+    local missing_models=()
+
+    for model in "${FEATURE_MODELS[@]}"; do
+        if ! model_exists "$model"; then
+            missing_models+=("$model")
+        fi
+    done
+
+    if [[ ${#missing_models[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    log_info "Creating specialized feature models..."
+
+    for model in "${missing_models[@]}"; do
+        local modelfile="$MODELFILES_DIR/${model}.modelfile"
+        if [[ -f "$modelfile" ]]; then
+            log_step "Creating $model..."
+            if ollama create "$model" -f "$modelfile" > /dev/null 2>&1; then
+                log_success "Created $model"
+            else
+                log_warn "Failed to create $model, will use default model"
+            fi
+        else
+            log_warn "Modelfile not found: $modelfile"
+        fi
+    done
+}
+
+# Get the appropriate model for a document type
+get_model_for_doctype() {
+    local doc_type="$1"
+    local fallback="$2"
+
+    case "$doc_type" in
+        analysis)
+            if model_exists "feature-analyst"; then
+                echo "feature-analyst"
+            else
+                echo "$fallback"
+            fi
+            ;;
+        plan)
+            if model_exists "feature-planner"; then
+                echo "feature-planner"
+            else
+                echo "$fallback"
+            fi
+            ;;
+        review)
+            if model_exists "feature-reviewer"; then
+                echo "feature-reviewer"
+            else
+                echo "$fallback"
+            fi
+            ;;
+        runbook)
+            if model_exists "runbook-generator"; then
+                echo "runbook-generator"
+            else
+                echo "$fallback"
+            fi
+            ;;
+        *)
+            echo "$fallback"
+            ;;
+    esac
+}
+
+#######################################
+# INIT-MODELS COMMAND
+#######################################
+cmd_init_models() {
+    echo ""
+    echo "========================================="
+    echo "       kb-ai Init Models"
+    echo "========================================="
+    echo ""
+
+    # Check Ollama is running
+    if ! curl -s "$OLLAMA_API/tags" > /dev/null 2>&1; then
+        log_error "Ollama is not running. Start it with: ollama serve"
+        exit 1
+    fi
+    log_success "Ollama is running"
+
+    # Check if modelfiles directory exists
+    if [[ ! -d "$MODELFILES_DIR" ]]; then
+        log_error "Modelfiles directory not found: $MODELFILES_DIR"
+        log_info "Run this command from the kb-ai project directory"
+        exit 1
+    fi
+
+    echo ""
+    log_info "Creating specialized feature models..."
+    echo ""
+
+    local created=0
+    local skipped=0
+    local failed=0
+
+    for model in "${FEATURE_MODELS[@]}"; do
+        local modelfile="$MODELFILES_DIR/${model}.modelfile"
+
+        if [[ ! -f "$modelfile" ]]; then
+            log_warn "Modelfile not found: ${model}.modelfile"
+            ((failed++)) || true
+            continue
+        fi
+
+        if model_exists "$model"; then
+            log_info "Model already exists: $model (skipping)"
+            ((skipped++)) || true
+            continue
+        fi
+
+        log_step "Creating $model..."
+        if ollama create "$model" -f "$modelfile" > /dev/null 2>&1; then
+            log_success "Created $model"
+            ((created++)) || true
+        else
+            log_error "Failed to create $model"
+            ((failed++)) || true
+        fi
+    done
+
+    echo ""
+    echo "========================================="
+    echo "       Summary"
+    echo "========================================="
+    echo ""
+    log_info "Created: $created"
+    log_info "Skipped: $skipped"
+    if [[ $failed -gt 0 ]]; then
+        log_warn "Failed: $failed"
+    fi
+    echo ""
+
+    # List available models
+    log_info "Available feature models:"
+    ollama list | grep -E "feature-|runbook-" || true
+    echo ""
+}
 
 #######################################
 # SETUP COMMAND
@@ -752,6 +917,31 @@ cmd_feature_run() {
     local input_content
     input_content=$(cat "$input_file")
 
+    # Load project context from CLAUDE.md if it exists
+    local project_context=""
+    local claude_md_path=""
+    for path in "$PROJECT_ROOT/CLAUDE.md" "$PROJECT_ROOT/.claude/CLAUDE.md" "$AI_DIR/CLAUDE.md"; do
+        if [[ -f "$path" ]]; then
+            claude_md_path="$path"
+            project_context=$(cat "$path")
+            break
+        fi
+    done
+
+    # Build enriched input with project context for analysis and review
+    local input_with_context="$input_content"
+    if [[ -n "$project_context" ]]; then
+        input_with_context="## Contexto do Projeto (CLAUDE.md)
+
+$project_context
+
+---
+
+## Feature Request
+
+$input_content"
+    fi
+
     echo ""
     echo "========================================="
     echo "       Feature: $title"
@@ -759,6 +949,11 @@ cmd_feature_run() {
     echo ""
     log_info "Model: $model"
     log_info "Output: $feature_dir/"
+    if [[ -n "$claude_md_path" ]]; then
+        log_info "Project context: $claude_md_path"
+    else
+        log_warn "No CLAUDE.md found - running without project context"
+    fi
     echo ""
 
     # Check Ollama is running
@@ -767,21 +962,44 @@ cmd_feature_run() {
         exit 1
     fi
 
-    # Generate each document
-    log_step "Generating 01-analysis.md..."
-    generate_document "$model" "$input_content" "analysis" > "$feature_dir/01-analysis.md"
+    # Ensure specialized models exist (unless user specified a model)
+    local use_specialized=false
+    if [[ "$model" == "$DEFAULT_MODEL" ]]; then
+        ensure_feature_models
+        use_specialized=true
+    fi
+
+    # Generate each document with specialized models
+    local analysis_model plan_model review_model runbook_model
+    if [[ "$use_specialized" == true ]]; then
+        analysis_model=$(get_model_for_doctype "analysis" "$model")
+        plan_model=$(get_model_for_doctype "plan" "$model")
+        review_model=$(get_model_for_doctype "review" "$model")
+        runbook_model=$(get_model_for_doctype "runbook" "$model")
+    else
+        analysis_model="$model"
+        plan_model="$model"
+        review_model="$model"
+        runbook_model="$model"
+    fi
+
+    # Use enriched input (with project context) for analysis, plan and review
+    # Use plain input for runbook (more focused on execution steps)
+
+    log_step "Generating 01-analysis.md (model: $analysis_model)..."
+    generate_document "$analysis_model" "$input_with_context" "analysis" > "$feature_dir/01-analysis.md"
     log_success "Created 01-analysis.md"
 
-    log_step "Generating 02-plan.md..."
-    generate_document "$model" "$input_content" "plan" > "$feature_dir/02-plan.md"
+    log_step "Generating 02-plan.md (model: $plan_model)..."
+    generate_document "$plan_model" "$input_with_context" "plan" > "$feature_dir/02-plan.md"
     log_success "Created 02-plan.md"
 
-    log_step "Generating 03-review.md..."
-    generate_document "$model" "$input_content" "review" > "$feature_dir/03-review.md"
+    log_step "Generating 03-review.md (model: $review_model)..."
+    generate_document "$review_model" "$input_with_context" "review" > "$feature_dir/03-review.md"
     log_success "Created 03-review.md"
 
-    log_step "Generating 04-runbook.md..."
-    generate_document "$model" "$input_content" "runbook" > "$feature_dir/04-runbook.md"
+    log_step "Generating 04-runbook.md (model: $runbook_model)..."
+    generate_document "$runbook_model" "$input_content" "runbook" > "$feature_dir/04-runbook.md"
     log_success "Created 04-runbook.md"
 
     echo ""
@@ -1087,6 +1305,7 @@ show_help() {
     echo "Commands:"
     echo "  setup         Check Ollama, pull models, run sanity check"
     echo "  init-kit      Create/update .ai/ directory with command prompts"
+    echo "  init-models   Create specialized models for feature analysis"
     echo "  install-model Install a model (with Hugging Face fallback)"
     echo "  feature       Feature analysis commands"
     echo ""
@@ -1098,6 +1317,12 @@ show_help() {
     echo "Feature Commands:"
     echo "  feature run --title \"...\" --input file.txt [--model model]"
     echo ""
+    echo "Specialized Models (created by init-models):"
+    echo "  feature-analyst    Technical analysis of features"
+    echo "  feature-planner    Implementation planning"
+    echo "  feature-reviewer   Code review and validation"
+    echo "  runbook-generator  Step-by-step execution guides"
+    echo ""
     echo "Options:"
     echo "  --help, -h     Show this help"
     echo "  --version, -v  Show version"
@@ -1105,6 +1330,7 @@ show_help() {
     echo "Examples:"
     echo "  kb-ai setup"
     echo "  kb-ai init-kit"
+    echo "  kb-ai init-models"
     echo "  kb-ai install-model qwen2.5:1.5b"
     echo "  kb-ai install-model --hf qwen2.5:7b"
     echo "  kb-ai feature run --title \"User Auth\" --input auth.txt"
@@ -1118,6 +1344,9 @@ main() {
             ;;
         init-kit)
             cmd_init_kit
+            ;;
+        init-models)
+            cmd_init_models
             ;;
         install-model)
             shift
