@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Run tests before release
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          chmod +x bin/kb-ai
+          ./bin/kb-ai --help
+          ./bin/kb-ai --version
+
+      - name: Create release package
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          mkdir -p dist
+
+          # Create tarball
+          tar -czvf dist/kb-ai-${VERSION}.tar.gz \
+            bin/kb-ai \
+            scripts/kb-ai \
+            .ai/ \
+            README.md 2>/dev/null || \
+          tar -czvf dist/kb-ai-${VERSION}.tar.gz \
+            bin/kb-ai \
+            scripts/kb-ai \
+            .ai/
+
+          # Create zip
+          zip -r dist/kb-ai-${VERSION}.zip \
+            bin/kb-ai \
+            scripts/kb-ai \
+            .ai/ \
+            README.md 2>/dev/null || \
+          zip -r dist/kb-ai-${VERSION}.zip \
+            bin/kb-ai \
+            scripts/kb-ai \
+            .ai/
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          echo "## What's Changed" > CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          git log --pretty=format:"- %s (%h)" $(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")..HEAD >> CHANGELOG.md 2>/dev/null || echo "- Initial release" >> CHANGELOG.md
+          cat CHANGELOG.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ steps.version.outputs.VERSION }}
+          body_path: CHANGELOG.md
+          files: |
+            dist/kb-ai-*.tar.gz
+            dist/kb-ai-*.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Lint bash scripts
+        run: |
+          shellcheck bin/kb-ai || true
+          shellcheck scripts/kb-ai || true
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Run tests
+        run: |
+          chmod +x tests/test_cli.sh
+          ./tests/test_cli.sh
+
+      - name: Test init-kit command
+        run: |
+          chmod +x bin/kb-ai
+          ./bin/kb-ai init-kit
+          test -f .ai/README.md
+          test -d .ai/commands
+          echo "init-kit command works correctly"
